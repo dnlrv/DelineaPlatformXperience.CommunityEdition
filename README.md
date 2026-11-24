@@ -23,7 +23,7 @@ $DPXCE = ([ScriptBlock]::Create(((Invoke-WebRequest -Uri 'https://raw.githubuser
 
 The Local Loader method involves downloading the contents of the repo to any folder and using the module from there. The benefit here is that this method will work from any folder, not just the official PowerShell module folders. This is a local, but portable install of this module.
 
-To ge started, download the repo and move it into a desired folder. Then open a PowerShell session and navigate to that folder. Then run the following:
+To get started, download the repo and move it into a desired folder. Then open a PowerShell session and navigate to that folder. Then run the following:
 
 ```PowerShell
 . (([ScriptBlock]::Create((Get-Content .\DPXCE_local.ps1 -Raw))))
@@ -31,7 +31,7 @@ To ge started, download the repo and move it into a desired folder. Then open a 
 
 # DelineaPlatformXperience.CommunityEdition (DPXCE) (Traditional Module)
 
-The Traditional Module method is downloading the module and installing it into a Microsoft approved locate for PowerShell modules just like any other PowerShell module.
+The Traditional Module method is downloading the module and installing it into a Microsoft approved location for PowerShell modules just like any other PowerShell module.
 
 For example, to make this module available system-wide, place the contents of this repo in a folder located at `C:\Program Files\PowerShell\7\Modules\DPXCE`.
 
@@ -49,15 +49,27 @@ This module requires PowerShell version 7.6 at minimum. Also outbound internet a
 
 Once ready by one of the three methods mentioned above, all public functions have standard PowerShell help files associated with them. So you can use `Get-Help Connect-DpxTenant` to get the help file for that cmdlet.
 
-First you need to connect to your tenant with `Connect-DpxTenant`. Here is an example:
+First you need to connect to your tenant with `Connect-DpxTenant`. There are two supported authentication methods.
+
+### Interactive (username and password, with MFA if enabled)
 
 ```PowerShell
 Connect-DpxTenant -Url myurl.delinea.app -User mycloudadmin@domain.com
 ```
 
-*Federated Users* - a small popup will occur that will have you log into your Federated IdP. Once you complete authentication, the pop should close and you should be back in the PowerShell session.
+*Federated Users* - SAML/OIDC federation is detected automatically and is not supported in this release. `Connect-DpxTenant` stops with a clear error telling you to use an interactive or service account instead.
 
 *Non-Federated Users* - You will be prompted for a password and whatever MFA challenge is associated with that login.
+
+### Non-interactive (service account / bearer token)
+
+Use the OAuth2 client-credentials flow with a service account registered as a confidential client:
+
+```PowerShell
+Connect-DpxTenant -Url myurl.delinea.app -Client serviceacct@myurl.delinea.app -Secret "SECRETKEYHERE"
+```
+
+There is also the `-Scope` parameter (optional) which accepts `xpmheadless` (default) or `panw`, depending on which API surface your service account is authorized for.
 
 ### Underscore (_) scripts
 

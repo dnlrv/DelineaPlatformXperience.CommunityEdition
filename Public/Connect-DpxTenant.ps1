@@ -1,688 +1,220 @@
 ###########
-#region ### global:Connect-DpxTenant # CMDLETDESCRIPTION : Connects the user to a Platform Instance :
+#region ### global:Connect-DpxTenant # Connects the user to a Platform Instance :
 ###########
-function global:Connect-DpxTenant
+function Connect-DpxTenant
 {
-	<#
-	.SYNOPSIS
-    Connect to a Platform Instance.
+    <#
+    .SYNOPSIS
+    Connect to a Delinea Platform instance.
 
     .DESCRIPTION
-    This cmdlet will connect you to a Platform Instance. Information about your connection information will
-    be stored in global variables that will only exist for this PowerShell session. All DPXCE module
-	cmdlets will use this connection information when interacting with the instance, making it much easier
-	to simply the cmdlets.
+    Establishes a session against a Delinea Platform tenant and stores the connection in global
+    variables for the current PowerShell session. All other DPXCE cmdlets reuse this connection.
 
-	If you are connecting as a Federated User, there will be an additional pop-up window based on your 
-	federated redirect url. Completing the login process via this popup window will continue the federation
-	authentication attempt.
+    Two authentication flows are supported:
 
-    .PARAMETER Url
-    Enter the url to connect to, for example myurl.delinea.app.
+      - Interactive (default): supply -User. The tenant is queried for its authentication challenges
+        and each mechanism is answered. This covers plain username/password and MFA (text answers and
+        out-of-bounds challenges). Federation (SAML/OIDC) is detected and reported as unsupported in
+        this version.
 
-    .PARAMETER User
-    Enter the user to connect as, for example cloudadmin@mydomain.com.
+      - OAuth2: supply -Client and -Secret to obtain a bearer token non-interactively via the
+        documented client_credentials grant.
 
     .INPUTS
-    None.
+    None
+    You can't pipe objects into this cmdlet.
 
     .OUTPUTS
-    This cmdlet only outputs some information to the console window once connected. The cmdlet will store
-    all relevant connection information in global variables that exist for this session only.
+    `System.Object`
+    This cmdlet outputs a short confirmation once connected. The connection is stored in global
+    variables that exist for this session only.
 
     .EXAMPLE
-    C:\PS> Connect-DpxTenant -Url myurl.delinea.app -User myuser@domain.com
-    This cmdlet will attempt to connect to myurl.delinea.app with the user myuser@domain.com. You
-    will be prompted for password and MFA challenges relevant for the user myuser@domain.com. If
-	myuser@domain.com is a federated user, then a separate pop-up window will appear and redirect
-	you to your federated authentication source.
-	#>
-    [CmdletBinding(DefaultParameterSetName="All")]
-	param
-	(
-		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "Specify the URL to use for the connection (e.g. oceanlab.my.centrify.net).")]
-		[System.String]$Url,
-		
-		[Parameter(Mandatory = $true, ParameterSetName = "Interactive", HelpMessage = "Specify the User login to use for the connection (e.g. CloudAdmin@oceanlab.my.centrify.net).")]
-		[System.String]$User,
-        
-        [Parameter(Mandatory = $true, ParameterSetName = "OAuth2", HelpMessage = "Specify the OAuth2 Client ID to use to obtain a Bearer Token.")]
+    ```powershell
+    Connect-DpxTenant -Url yourtenant.delinea.app -User user@domain.com
+    ```
+    This cmdlet will attempt an interactive connection to yourtenant.delinea.app as user@domain.com. You will
+    be prompted for the password and any MFA challenge the tenant requires.
+
+    .EXAMPLE
+    ```powershell
+    Connect-DpxTenant -Url yourtenant.delinea.app -Client svc-api@domain.com -Secret '***'
+    ```
+    This cmdlet will obtain a bearer token non-interactively from the documented client_credentials
+    grant and connect to yourtenant.delinea.app.
+
+    .NOTES
+    Cmdlet info:
+    - Author: Daniel Rivera
+    - Date: 2026-11-24
+    - Version: 1.0
+    - Prerequisites: None
+    - Permissions: None required.
+
+    .COMPONENT
+    DelineaPlatformXperience
+
+    .LINK
+    [Original author: Daniel Rivera](https://github.com/dnlrv)
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'Interactive')]
+    param
+    (
+        # Enter the url to connect to, for example yourtenant.delinea.app.
+        [Parameter(Mandatory = $true, Position = 0, HelpMessage = "Specify the URL to use for the connection (e.g. yourtenant.delinea.app).")]
+        [System.String]$Url,
+
+        # Enter the user name to connect as, for example user@domain.com. Interactive authentication flow.
+        [Parameter(Mandatory = $true, ParameterSetName = 'Interactive', HelpMessage = "Specify the user name to connect as (e.g. user@domain.com).")]
+        [System.String]$User,
+
+        # Enter the OAuth2 client identifier to use for the bearer-token flow (for a service user, its username).
+        [Parameter(Mandatory = $true, ParameterSetName = 'OAuth2', HelpMessage = "Specify the OAuth2 client identifier (service-user username).")]
         [System.String]$Client,
 
-		[Parameter(Mandatory = $true, ParameterSetName = "OAuth2", HelpMessage = "Specify the OAuth2 Scope Name to claim a Bearer Token for.")]
-        [System.String]$Scope,
-
-		[Parameter(Mandatory = $true, ParameterSetName = "OAuth2", HelpMessage = "Specify the OAuth2 Secret to use for the ClientID.")]
+        # Enter the OAuth2 client secret to use for the bearer-token flow (for a service user, its password).
+        [Parameter(Mandatory = $true, ParameterSetName = 'OAuth2', HelpMessage = "Specify the OAuth2 client secret (service-user password).")]
         [System.String]$Secret,
 
-        [Parameter(Mandatory = $false, ParameterSetName = "Base64", HelpMessage = "Encode Base64 Secret to use for OAuth2.")]
-        [Switch]$EncodeSecret
-	)
-	
-	# Debug preference
-	if ($PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent)
-	{
-		# change debug preference to Inquire
-		$DebugPreference = "Inquire"
-	}
-	else 
-	{
-		# Debug message are turned off
-		$DebugPreference = "SilentlyContinue"
-	}
-
-	# if EncodeSecret was used
-	if ($EncodeSecret.IsPresent)
-	{
-		Try
-		{
-			# Get Confidential Client name and password
-			$Client = Read-Host "Confidential Client name"
-			$SecureString = Read-Host "Password" -AsSecureString
-			$Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString))
-			# Return Base64 encoded secret
-			$AuthenticationString = ("{0}:{1}" -f $Client, $Password)
-			return ("Secret: {0}" -f [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($AuthenticationString)))
-	
-		}
-		Catch
-		{
-			$e = New-Object DPXCEException -ArgumentList ("Error during Connect-DpxTenant -EncodeSecret.")
-			$e.AddExceptionData($_)
-		}
-	}# if ($EncodeSecret.IsPresent)
-
-	# Set Security Protocol for RestAPI (must use TLS 1.2)
-	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-	# Check if URL provided has "https://" in front, if so, remove it.
-	if ($Url.ToLower().Substring(0,8) -eq "https://")
-	{
-		$Url = $Url.Substring(8)
-	}
-
-	Write-Verbose ("Url is [{0}]" -f $Url)
-
-	# Delete any existing connection cache
-	$Global:DPXCEConnection = [Void]$null
-	
-	# if the OAuth2 version was used
-	if ($PSCmdlet.ParameterSetName -eq "OAuth2")
-	{
-		 # Get Bearer Token from OAuth2 Client App
-		 $BearerToken = Get-PASBearerToken -Url $Url -Client $Client -Secret $Secret -Scope $Scope
-
-		 # Validate Bearer Token and obtain Session details
-		 $Uri = ("https://{0}/Security/Whoami" -f $Url)
-		 $ContentType = "application/json" 
-		 $Header = @{ "X-CENTRIFY-NATIVE-CLIENT" = "1"; "Authorization" = ("Bearer {0}" -f $BearerToken) }
-		 Write-Debug ("Connecting to Delinea Platform (https://{0}) using Bearer Token" -f $Url)
-
-		# Format Json query
-		$Json = @{} | ConvertTo-Json
-		
-		Try
-		{
-			# Connect using Bearer Token
-			$WebResponse = Invoke-WebRequest -UseBasicParsing -Method Post -SessionVariable DPXCESession -Uri $Uri -Body $Json -ContentType $ContentType -Headers $Header
-		}
-		Catch
-		{
-			$e = New-Object DPXCEException -ArgumentList ("Error during Connect-DpxTenant via bearer token.")
-			$e.AddExceptionData($_)
-			$e.AddData("WebResponse",$WebResponse)
-			$e.AddData("Uri",$Uri)
-			$e.AddData("Json",$Json)
-			$global:LastDPXCE_PCMError = $e
-		}
-
-		# assuming we were successful
-		$WebResponseResult = $WebResponse.Content | ConvertFrom-Json
-		if ($WebResponseResult.Success)
-		{
-			# Get Connection details
-			$Connection = $WebResponseResult.Result
-			
-			# Force URL into PodFqdn to retain URL when performing MachineCertificate authentication
-			$Connection | Add-Member -MemberType NoteProperty -Name CustomerId -Value $Connection.TenantId
-			$Connection | Add-Member -MemberType NoteProperty -Name PodFqdn -Value $Url
-			
-			# Add session to the Connection
-			$Connection | Add-Member -MemberType NoteProperty -Name Session -Value $DPXCESession
-
-			# Set Connection as global
-			$Global:DPXCEConnection = $Connection
-
-			# setting the splat
-			$Global:DPXCESessionInformation = @{ Headers = $DPXCEConnection.Session.Headers }
-
-			# if the $DPXCEConnections variable does not contain this Connection, add it
-			if (-Not ($DPXCEConnections | Where-Object {$_.PodFqdn -eq $Connection.PodFqdn}))
-			{
-				# add a new DPXCEConnection object and add it to our $DPXCEConnectionsList
-				$obj = New-Object DPXCEConnection -ArgumentList ($Connection.PodFqdn, $Connection, $Global:DPXCESessionInformation)
-				$Global:DPXCEConnections.Add($obj) | Out-Null
-			}
-			
-			# Return information values to confirm connection success
-			return ($Connection | Select-Object -Property CustomerId, User, PodFqdn | Format-List)
-		}
-		else
-		{
-			Write-Error "Invalid Bearer Token"
-			Exit 1
-		}
-	}# if ($PSCmdlet.ParameterSetName -eq "OAuth2")
-
-	# if the Interactive version was used
-	elseif ($PSCmdlet.ParameterSetName -eq "Interactive")
-	{
-		Write-Verbose ("Interactive login used.")
-
-		# Setup variable for interactive connection using MFA
-		$Uri = ("https://{0}/identity/Security/StartAuthentication" -f $Url)
-		$BaseUrl = $Url.split(".")[0..$Url.Length] -join '.'
-		$ContentType = "application/json" 
-		$Header = @{ "X-CENTRIFY-NATIVE-CLIENT" = "true" }
-		Write-Host ("Connecting to Delinea Platform (https://{0}) as {1}`n" -f $Url, $User)
-
-        # Debug informations
-        Write-Verbose ("Uri= {0}" -f $Uri)
-        Write-Verbose ("User= {0}" -f $User)
-
-		# Format Json query
-		$Auth = @{}
-		#$Auth.TenantId = $Url.Split('.')[0]
-		$Auth.User = $User
-		$Auth.Version = "1.0"
-		$Json = $Auth | ConvertTo-Json
-
-		$userAgent = [Microsoft.PowerShell.Commands.PSUserAgent]::Chrome
-
-		Try # StartAuthentication
-		{
-			# Initiate connection
-			$InitialResponse = Invoke-WebRequest -UseBasicParsing -Method Post -SessionVariable DPXCESession -Uri $Uri -Body $Json -ContentType $ContentType -Headers $Header
-			
-		}
-		Catch
-		{
-			$e = New-Object DPXCEException -ArgumentList ("Error during StartAuthentication on Interactive Connect-DpxTenant.")
-			$e.AddExceptionData($_)
-			$e.AddData("InitialResponse",$InitialResponse)
-			$e.AddData("Uri",$Uri)
-			$e.AddData("Json",$Json)
-			$global:LastConnect_Error = $e
-		}
-
-		$global:InitialResponse = $InitialResponse
-
-		# Getting Authentication challenges from initial Response
-		$InitialResponseResult = $InitialResponse.Content | ConvertFrom-Json
-
-		Write-Verbose ("Initial Response Success is [{0}]" -f $InitialResponseResult.Success)
-		
-		# if the initial response was a success
-		if ($InitialResponseResult.Success)
-		{
-			# testing for Federation Redirect
-			# if the response has a property called IdpRedirectUrl
-			if ($InitialResponseResult.Result.Challenges.Mechanisms | Get-Member | Where-Object -Property Name -eq IdpRedirectUrl)
-			{
-				# then this is a federated user
-				Write-Verbose ("Federation detected.")
-
-				Write-Verbose ("Getting the New SAML interactive")
-				Try # IdpRedirectUrl ### Step 2
-				{
-					Write-Debug -Message "ATTEMPTING REDIRECT WINDOW"
-					# getting the SamlResponse, derived from https://github.com/allynl93/getSAMLResponse-Interactive/blob/main/PowerShell%20New-SAMLInteractive%20Module/PS-SAML-Interactive.psm1
-					#$extraResponse = Invoke-WebRequest -Method Get -Uri $InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl -WebSession $DPXCESession -UserAgent $userAgent
-					$InteractiveResponse = New-SAMLInteractive -LoginIDP $InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl -baseurl $BaseUrl
-					#$InteractiveResponse = Invoke-WebBrowser -Url $InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl -SamlResponse
-
-				}
-				Catch
-				{
-					$e = New-Object DPXCEException -ArgumentList ("Error during New-SAMLInteractive (Step 2) on Federated Connect-DpxTenant.")
-					$e.AddExceptionData($_)
-					$e.AddData("InteractiveResponse",$InteractiveResponse)
-					$e.AddData("IdpRedirectUrl",$InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl)
-					$e.AddData("InitialResponseResult",$InitialResponseResult)
-					$global:LastConnect_Error = $e
-					throw "Error encountered, check `$LastConnect_Error for more info."
-				}
-
-				
-				$global:InteractiveResponse = $InteractiveResponse
-
-				$bodyprep = New-Object System.Collections.ArrayList
-
-				foreach ($property in ($InteractiveResponse.PSObject.Properties | Where-Object -Property MemberType -eq NoteProperty | Where-Object -Property Name -ne "CallBackUrl" | Select-Object Name,Value))
-				{
-					$bodyprep.Add(("{0}={1}" -f $property.Name, [System.Web.HttpUtility]::UrlEncode(($property.Value)))) | Out-Null
-				}
-
-				$bodyresponse = $bodyprep -join "&"
-
-				<#
-				Switch ($InteractiveResponse.Type)
-				{
-					"SAML"
-					{
-						# preparing the body response back to Platform
-						$bodyresponse = ("SAMLResponse={0}&RelayState={1}" -f [System.Web.HttpUtility]::UrlEncode($InteractiveResponse.SamlResponse), $InteractiveResponse.RelayState)
-					}# "SAML"
-					"OIDC"
-					{
-						# preparing the body response back to Platform
-						$bodyresponse = ("code={0}&state={1}&iss={2}" -f $InteractiveResponse.Code,$InteractiveResponse.State, [System.Web.HttpUtility]::UrlEncode($InteractiveResponse.ISS))
-					}
-				}# Switch ($InteractiveResponse.Type) #>
-
-				#$userAgent = [Microsoft.PowerShell.Commands.PSUserAgent]::Chrome
-
-
-				Write-Verbose ("Trying the callback url attempt")
-				Try # CallbackUrl ### Step 3
-				{
-					# returning to the callback url
-					Write-Debug -Message "ATTEMPTING CALLBACK URL"
-					#$callbackattempt = Invoke-WebRequest -Method Post -Uri $InteractiveResponse.CallbackUrl -Body ("{0}" -f ($bodyresponse)) -WebSession $DPXCESession -Headers $Header #-UserAgent $userAgent
-					$callbackattempt = Invoke-WebRequest -Method Get -Uri $InteractiveResponse.CallbackUrl -WebSession $DPXCESession -Headers $Header -UserAgent $userAgent
-				}
-				Catch
-				{
-					$e = New-Object DPXCEException -ArgumentList ("Error during CallbackUrl attempt (Step 3) on Federated Connect-DpxTenant.")
-					$e.AddExceptionData($_)
-					$e.AddData("InteractiveResponse",$InteractiveResponse)
-					$e.AddData("IdpRedirectUrl",$InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl)
-					$e.AddData("InitialResponseResult",$InitialResponseResult)
-					$e.AddData("bodyprep",$bodyprep)
-					$e.AddData("bodyresponse",$bodyresponse)
-					$e.AddData("callbackattempt",$callbackattempt)
-					$e.AddData("DPXCESession",$DPXCESession)
-					$global:LastConnect_Error = $e
-					throw "Error encountered, check `$LastConnect_Error for more info."
-				}
-
-				# getting values from the first after saml attempt
-				$redirecturl = ($callbackattempt.Content -replace '\n','') -replace '.*method="post" action="(.*?)".*','$1'
-				$code  = $callbackattempt.InputFields | Where-Object -Property Name -eq code  | Select-Object -ExpandProperty value
-				$state = $callbackattempt.InputFields | Where-Object -Property Name -eq state | Select-Object -ExpandProperty value
-				$iss   = $callbackattempt.InputFields | Where-Object -Property Name -eq iss   | Select-Object -ExpandProperty value
-				
-				# preparing the next response
-				$nextbodyresponse = ("code={0}&state={1}&iss={2}" -f $code, [System.Web.HttpUtility]::UrlEncode($state), [System.Web.HttpUtility]::UrlEncode($iss))
-
-				Write-Verbose ("Trying the redirect url attempt")
-				Try # RedirectUrl ### Step 4
-				{
-					# the first redirect attempt
-					$redirectattempt = Invoke-WebRequest -Method Post -Uri $redirecturl -Body ("{0}" -f $nextbodyresponse) -Headers $Header -WebSession $DPXCESession #-UserAgent $userAgent
-				}
-				Catch
-				{
-					$e = New-Object DPXCEException -ArgumentList ("Error during first redirect attempt (Step 4) on Federated Connect-DpxTenant.")
-					$e.AddExceptionData($_)
-					$e.AddData("InteractiveResponse",$InteractiveResponse)
-					$e.AddData("IdpRedirectUrl",$InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl)
-					$e.AddData("InitialResponseResult",$InitialResponseResult)
-					$e.AddData("nextbodyresponse",$nextbodyresponse)
-					$e.AddData("callbackattempt",$callbackattempt)
-					$e.AddData("redirectattempt",$redirectattempt)
-					$e.AddData("redirecturl",$redirecturl)
-					$e.AddData("code",$code)
-					$e.AddData("state",$state)
-					$e.AddData("iss",$iss)
-					$e.AddData("DPXCESession",$DPXCESession)
-					$global:LastConnect_Error = $e
-					throw "Error encountered, check `$LastConnect_Error for more info."
-				}
-
-				# preparing the next round of data
-				$querystring = $redirectattempt.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
-				$sessionid = $querystring -replace '.*SessionId=(.*?)&.*','$1'
-				$mechanismid = $querystring -replace '.*MechanismId=(.*?)&.*','$1'
-				$continuetoken = $querystring -replace '.*ContinueToken=(.*?)&.*','$1'
-
-				Write-Verbose ("Trying the Void attempt")
-				Try # VoidAttempt ### Step 5
-				{
-					# the void attempt, we don't use any data from this response but we need to hit this endpoint
-					$voidattempt = Invoke-WebRequest -Method Get -Uri $redirectattempt.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -WebSession $DPXCESession
-				}
-				Catch
-				{
-					$e = New-Object DPXCEException -ArgumentList ("Error during the void attempt (Step 5) on Federated Connect-DpxTenant.")
-					$e.AddExceptionData($_)
-					$e.AddData("InteractiveResponse",$InteractiveResponse)
-					$e.AddData("IdpRedirectUrl",$InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl)
-					$e.AddData("InitialResponseResult",$InitialResponseResult)
-					$e.AddData("bodyresponse",$bodyresponse)
-					$e.AddData("callbackattempt",$callbackattempt)
-					$e.AddData("redirectattempt",$redirectattempt)
-					$e.AddData("voidattempt",$voidattempt)
-					$global:LastConnect_Error = $e
-					throw "Error encountered, check `$LastConnect_Error for more info."
-				}
-
-				# preparing the json body
-				$jsonbody = @{}
-				$jsonbody.Action = "Reattach"
-				$jsonbody.Answer = $continuetoken
-				$jsonbody.MechanismId = $mechanismid
-				$jsonbody.SessionId = $sessionid
-
-				$global:voidattempt = $voidattempt
-
-				Write-Verbose ("Trying the Y Auth attempt")
-				Try # Y Auth ### Step 6
-				{
-					# the Advanced Auth before the last auth attempt (Y before Z)
-					$YAuth = Invoke-WebRequest -Method Post -Uri ('https://{0}/identity/Security/AdvanceAuthentication' -f $Url) -Body ($jsonbody | ConvertTo-Json) -WebSession $DPXCESession
-				}
-				Catch
-				{
-					$e = New-Object DPXCEException -ArgumentList ("Error during the Y Auth attempt (Step 6) on Federated Connect-DpxTenant.")
-					$e.AddExceptionData($_)
-					$e.AddData("InteractiveResponse",$InteractiveResponse)
-					$e.AddData("IdpRedirectUrl",$InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl)
-					$e.AddData("InitialResponseResult",$InitialResponseResult)
-					$e.AddData("bodyresponse",$bodyresponse)
-					$e.AddData("callbackattempt",$callbackattempt)
-					$e.AddData("redirectattempt",$redirectattempt)
-					$e.AddData("voidattempt",$voidattempt)
-					$e.AddData("jsonbody",$jsonbody)
-					$e.AddData("YAuth",$YAuth)
-					$global:LastConnect_Error = $e
-					throw "Error encountered, check `$LastConnect_Error for more info."
-				}
-
-				# preparing new data
-				$jsondata = $YAuth.Content | ConvertFrom-Json
-
-				$newsessionid   = $jsondata.Result.SessionId
-				$newmechanismid = $jsondata.Result.Challenges.Mechanisms.MechanismId
-
-				$global:YAuth = $YAuth
-
-				$jsonbody = @{}
-				$jsonbody.Action = "Answer"
-				$jsonbody.Answer = ""
-				$jsonbody.MechanismId = $newmechanismid
-				$jsonbody.SessionId = $newsessionid
-
-				Write-Verbose ("Trying the Last Auth attempt")
-				Try # Last Auth ### Step 7
-				{
-					# the final Advanced Auth attempt
-					$LastAuth = Invoke-WebRequest -Method Post -Uri ('https://{0}/identity/Security/AdvanceAuthentication' -f $Url) -Body ($jsonbody | ConvertTo-Json) -WebSession $DPXCESession
-				}
-				Catch
-				{
-					$e = New-Object DPXCEException -ArgumentList ("Error during the Last Auth attempt (Step 7) on Federated Connect-DpxTenant.")
-					$e.AddExceptionData($_)
-					$e.AddData("InteractiveResponse",$InteractiveResponse)
-					$e.AddData("IdpRedirectUrl",$InitialResponseResult.Result.Challenges.Mechanisms.IdpRedirectUrl)
-					$e.AddData("InitialResponseResult",$InitialResponseResult)
-					$e.AddData("bodyresponse",$bodyresponse)
-					$e.AddData("callbackattempt",$callbackattempt)
-					$e.AddData("redirectattempt",$redirectattempt)
-					$e.AddData("voidattempt",$voidattempt)
-					$e.AddData("jsonbody",$jsonbody)
-					$e.AddData("YAuth",$YAuth)
-					$e.AddData("LastAuth",$LastAuth)
-					$global:LastConnect_Error = $e
-					throw "Error encountered, check `$LastConnect_Error for more info."
-				}
-
-				$global:LastAuth = $LastAuth
-
-				# getting the final bit of data
-				$authdata = $LastAuth.Content | ConvertFrom-Json
-
-				# Get Connection details
-				$Connection = $authdata.Result
-
-				# Add session to the Connection
-				$Connection | Add-Member -MemberType NoteProperty -Name Session -Value $DPXCESession
-
-				# removing the identity part of the pod FQDN
-				$Connection.PodFqdn = $Connection.PodFqdn -replace '/identity',''
-
-				# Set Connection as global
-				$Global:DPXCEConnection = $Connection
-
-				# setting the bearer token header
-				$accesstoken = $Connection.OAuthTokens.access_token
-				$headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
-				$headers.Add("Authorization","Bearer $accesstoken")
-
-				# setting the splat
-				$Global:DPXCESessionInformation = @{ Headers = $headers; ContentType = "application/json" }
-
-			}# if ($InitialResponseResult.Result.Challenges.Mechanisms | Get-Member | Where-Object -Property Name -eq IdpRedirectUrl)
-
-			# if DPXCEConnection is still null, then we're not going through federation
-			if ($Global:DPXCEConnection -eq $null)
-			{
-				# Go through all challenges
-				foreach ($Challenge in $InitialResponseResult.Result.Challenges)
-				{
-					# Go through all available mechanisms
-					if ($Challenge.Mechanisms.Count -gt 1)
-					{
-						Write-Host "`n[Available mechanisms]"
-						# More than one mechanism available
-						$MechanismIndex = 1
-						foreach ($Mechanism in $Challenge.Mechanisms)
-						{
-							# Show Mechanism
-							Write-Host ("{0} - {1}" -f $MechanismIndex++, $Mechanism.PromptSelectMech)
-						}
-						
-						# Prompt for Mechanism selection
-						$Selection = Read-Host -Prompt "Please select a mechanism [1]"
-						# Default selection
-						if ([System.String]::IsNullOrEmpty($Selection))
-						{
-							# Default selection is 1
-							$Selection = 1
-						}
-						# Validate selection
-						if ($Selection -gt $Challenge.Mechanisms.Count)
-						{
-							# Selection must be in range
-							Throw "Invalid selection. Authentication challenge aborted." 
-						}
-					}# if ($Challenge.Mechanisms.Count -gt 1)
-					elseif($Challenge.Mechanisms.Count -eq 1)
-					{
-						# Force selection to unique mechanism
-						$Selection = 1
-					}
-					else
-					{
-						# Unknown error
-						Throw "Invalid number of mechanisms received. Authentication challenge aborted."
-					}
-
-					# Select chosen Mechanism and prepare answer
-					$ChosenMechanism = $Challenge.Mechanisms[$Selection - 1]
-
-					# Format Json query
-					$Auth = @{}
-					$Auth.TenantId = $InitialResponseResult.Result.TenantId
-					$Auth.SessionId = $InitialResponseResult.Result.SessionId
-					$Auth.MechanismId = $ChosenMechanism.MechanismId
-					
-					# Decide for Prompt or Out-of-bounds Auth
-					switch($ChosenMechanism.AnswerType)
-					{
-						"Text" # Prompt User for answer
-						{
-							$Auth.Action = "Answer"
-							# Prompt for User answer using SecureString to mask typing
-							$SecureString = Read-Host $ChosenMechanism.PromptMechChosen -AsSecureString
-
-							if([System.Environment]::OSVersion.Platform -like "Win32*"){
-								$Auth.Answer = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString))
-							# Made this so it could kinda work on CentOS 9; This is the way it has be for Linux to decrypt priv string
-							}elseif([System.Environment]::OSVersion.Platform -eq "Unix"){
-								$Auth.Answer = $(ConvertFrom-SecureString -SecureString $secureString -AsPlainText)
-							}else{
-								throw [System.SystemException]::new("Somehow OS was missed. Need to stop NOW.")}
-						}
-						
-						"StartTextOob" # Out-of-bounds Authentication (User need to take action other than through typed answer)
-						{
-							$Auth.Action = "StartOOB"
-							# Notify User for further actions
-							Write-Host $ChosenMechanism.PromptMechChosen
-						}
-					}
-					$Json = $Auth | ConvertTo-Json
-					
-					# Send Challenge answer
-					$Uri = ("https://{0}/identity/Security/AdvanceAuthentication" -f $Url)
-					$ContentType = "application/json" 
-					$Header = @{ "X-CENTRIFY-NATIVE-CLIENT" = "1" }
-
-					Write-Verbose ("Attempting AdvancedAuthentication")
-
-					Try
-					{
-						# Send answer
-						$WebResponse = Invoke-WebRequest -UseBasicParsing -Method Post -SessionVariable DPXCESession -Uri $Uri -Body $Json -ContentType $ContentType -Headers $Header
-					}
-					Catch
-					{
-						$e = New-Object DPXCEException -ArgumentList ("Error during 1st AdvanceAuthentication on Interactive Connect-DpxTenant.")
-						$e.AddExceptionData($_)
-						$e.AddData("WebResponse",$WebResponse)
-						$e.AddData("Uri",$Uri)
-						$e.AddData("Json",$Json)
-						$global:LastDPXCE_PCMError = $e
-					}
-
-					# Get Response
-					$WebResponseResult = $WebResponse.Content | ConvertFrom-Json
-
-					Write-Verbose ("Initial Response Success is [{0}]" -f $WebResponseResult.Success)
-					
-					# if the first AdvancedAuthentication was a success
-					if ($WebResponseResult.Success)
-					{
-						# Evaluate Summary response
-						if ($WebResponseResult.Result.Summary -eq "OobPending")
-						{
-							$Answer = Read-Host "Enter code then press <enter> to finish authentication"
-							# Send Poll message to Delinea Identity Platform after pressing enter key
-							$Uri = ("https://{0}/identity/Security/AdvanceAuthentication" -f $Url)
-							$ContentType = "application/json" 
-							$Header = @{ "X-CENTRIFY-NATIVE-CLIENT" = "1" }
-
-							# Format Json query
-							$Auth = @{}
-							$Auth.TenantId = $InitialResponseResult.Result.TenantId
-							$Auth.SessionId = $InitialResponseResult.Result.SessionId
-							$Auth.MechanismId = $ChosenMechanism.MechanismId
-							
-							# Either send entered code or poll service for answer
-							if ([System.String]::IsNullOrEmpty($Answer))
-							{
-								$Auth.Action = "Poll"
-							}
-							else
-							{
-								$Auth.Action = "Answer"
-								$Auth.Answer = $Answer
-							}
-							$Json = $Auth | ConvertTo-Json
-							
-							Try
-							{
-								# Send Poll message or Answer
-								$WebResponse = Invoke-WebRequest -UseBasicParsing -Method Post -SessionVariable DPXCESession -Uri $Uri -Body $Json -ContentType $ContentType -Headers $Header
-							}
-							Catch
-							{
-								$e = New-Object DPXCEException -ArgumentList ("Error during 2nd AdvanceAuthentication on Interactive Connect-DpxTenant.")
-								$e.AddExceptionData($_)
-								$e.AddData("WebResponse",$WebResponse)
-								$e.AddData("Uri",$Uri)
-								$e.AddData("Json",$Json)
-								$global:LastDPXCE_PCMError = $e
-							}
-
-							# Get Response
-							$WebResponseResult = $WebResponse.Content | ConvertFrom-Json
-
-							if ($WebResponseResult.Result.Summary -ne "LoginSuccess")
-							{
-								Write-Error "Failed to receive challenge answer or answer is incorrect. Authentication challenge aborted."
-								$global:Auth = $Auth
-							}
-						}# if ($WebResponseResult.Result.Summary -eq "OobPending")
-
-						# If summary return LoginSuccess at any step, we can proceed with session
-						if ($WebResponseResult.Result.Summary -eq "LoginSuccess")
-						{
-							# Get Session Token from successfull login
-							Write-Debug ("WebResponse=`n{0}" -f $WebResponseResult)
-
-							# Get Connection details
-							$Connection = $WebResponseResult.Result
-			
-							# Add session to the Connection
-							$Connection | Add-Member -MemberType NoteProperty -Name Session -Value $DPXCESession
-
-							# removing the identity part of the pod FQDN
-							$Connection.PodFqdn = $Connection.PodFqdn -replace '/identity',''
-							
-							# adding in a shortname
-							$Connection | Add-Member -MemberType NoteProperty -Name TenantHostName -Value $Connection.PodFqdn.Split(".")[0]
-
-							# Set Connection as global
-							$Global:DPXCEConnection = $Connection
-
-
-							# setting the bearer token header
-							$accesstoken = $Connection.OAuthTokens.access_token
-							$headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
-							$headers.Add("Authorization","Bearer $accesstoken")
-
-							# setting the splat
-							$Global:DPXCESessionInformation = @{ Headers = $headers; ContentType = "application/json" }
-
-							<# leaving this out for now, but this will be added later to support multiple Platform connections
-							# if the $DPXCEConnections variable does not contain this Connection, add it
-							if (-Not ($DPXCEConnections | Where-Object {$_.PodFqdn -eq $Connection.PodFqdn}))
-							{
-								# add a new DPXCEConnection object and add it to our $DPXCEConnectionsList
-								$obj = New-Object DPXCEConnection -ArgumentList ($Connection.PodFqdn,$Connection,$Global:DPXCESessionInformation)
-								$Global:DPXCEConnections.Add($obj) | Out-Null
-							} #>
-						}# if ($WebResponseResult.Result.Summary -eq "LoginSuccess")
-					}# if ($WebResponseResult.Success)
-					else
-					{
-						Throw $WebResponseResult.Message
-					}
-				}# foreach ($Challenge in $InitialResponseResult.Result.Challenges)
-			}# if ($Global:DPXCEConnection -eq $null)
-
-			# Return information values to confirm connection success
-			return ($Connection | Select-Object -Property CustomerId, User, PodFqdn | Format-List)
-
-		}# if ($InitialResponseResult.Success)
-		else
-		{
-			# Unsuccesful connection
-			Throw $InitialResponseResult.Message
-		}
-	}# elseif ($PSCmdlet.ParameterSetName -eq "Interactive")
-}# function global:Connect-DpxTenant
-#endregion
+        # Enter the OAuth2 scope to claim a token for. Defaults to xpmheadless.
+        [Parameter(Mandatory = $false, ParameterSetName = 'OAuth2', HelpMessage = "Specify the OAuth2 scope to request.")]
+        [ValidateSet('xpmheadless')]
+        [System.String]$Scope = 'xpmheadless'
+    )
+
+    Write-Verbose ("Connect-DpxTenant invoked. Parameter set: [{0}]." -f $PSCmdlet.ParameterSetName)
+
+    # set TLS 1.2 for all REST calls made during this connection
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Write-Verbose "Enforced TLS 1.2 (SecurityProtocol = Tls12) for REST calls."
+
+    # normalize the url (strip any scheme) so the pod host name is bare
+    if ($Url.ToLower().StartsWith("https://"))
+    {
+        $Url = $Url.Substring(8)
+    }# if the url started with https://
+    elseif ($Url.ToLower().StartsWith("http://"))
+    {
+        $Url = $Url.Substring(7)
+    }# if the url started with http://
+    Write-Verbose ("Normalized pod host: [{0}]." -f $Url)
+
+    # delete any existing connection cache for this session
+    $Global:DPXCEConnection = $null
+    $Global:DPXCESessionInformation = $null
+    Write-Verbose "Cleared any existing session cache (DPXCEConnection, DPXCESessionInformation)."
+
+    # if the OAuth2 bearer-token flow was used
+    if ($PSCmdlet.ParameterSetName -eq 'OAuth2')
+    {
+        Write-Verbose ("Using OAuth2 parameter set. Requesting bearer token via client_credentials grant (scope: {0})." -f $Scope)
+
+        # obtain the bearer token from the documented token endpoint
+        $token = Get-DpxOAuthToken -Url $Url -Client $Client -Secret $Secret -Scope $Scope
+        Write-Verbose "Bearer token acquired from the token endpoint."
+
+        # finalize the connection with the bearer token
+        Set-DPXCESession -PodFqdn $Url -AccessToken $token.access_token -User $Client
+        Write-Verbose ("Connection established for [{0}]." -f $Client)
+        return
+    }# if ($PSCmdlet.ParameterSetName -eq 'OAuth2')
+
+    # interactive flow
+    Write-Verbose ("Using Interactive parameter set for user [{0}]." -f $User)
+    Write-Host ("Connecting to Delinea Platform (https://{0}) as {1}`n" -f $Url, $User)
+
+    # start the authentication session and discover the challenges
+    Write-Verbose "Starting authentication session (StartAuthentication)."
+    $startResult = Invoke-DpxStartAuthentication -Url $Url -User $User
+    Write-Verbose ("StartAuthentication returned. TenantId [{0}], SessionId [{1}]." -f $startResult.TenantId, $startResult.SessionId)
+
+    # federation is signaled by an IdpRedirectUrl on the result
+    if ($startResult.PSObject.Properties.Name -contains 'IdpRedirectUrl')
+    {
+        Write-Verbose "Federation (SAML/OIDC) detected via IdpRedirectUrl; unsupported in this version."
+        throw 'Federation (SAML/OIDC) is not yet supported in this version of Connect-DpxTenant.'
+    }# if federation was detected
+
+    # answer every challenge the tenant returned
+    foreach ($challenge in $startResult.Challenges)
+    {
+        Write-Verbose "Processing next authentication challenge."
+
+        # select a mechanism when more than one is offered
+        $mechanism = $challenge.Mechanisms
+        if (@($mechanism).Count -gt 1)
+        {
+            Write-Verbose ("{0} mechanism(s) offered for this challenge." -f @($mechanism).Count)
+            Write-Host "`n[Available mechanisms]"
+            $mechanismIndex = 1
+            foreach ($mechanismOption in $mechanism)
+            {
+                Write-Host ("{0} - {1}" -f $mechanismIndex++, $mechanismOption.PromptSelectMech)
+            }# foreach ($mechanismOption in $mechanism)
+            $selection = Read-Host "Please select a mechanism [1]"
+            if ([System.String]::IsNullOrEmpty($selection))
+            {
+                # default selection is 1
+                $selection = 1
+            }# if no selection was made
+            if ([int]$selection -gt @($mechanism).Count)
+            {
+                Write-Verbose ("Invalid mechanism selection [{0}] of [{1}] options." -f $selection, @($mechanism).Count)
+                throw 'Invalid mechanism selection. Authentication challenge aborted.'
+            }# if invalid selection
+            $mechanism = $mechanism[[int]$selection - 1]
+        }# if more than one mechanism was offered
+        else
+        {
+            $mechanism = @($mechanism)[0]
+        }
+
+        # answer the mechanism according to its answer type
+        Write-Verbose ("Answering mechanism [{0}] (AnswerType: {1})." -f $mechanism.MechanismId, $mechanism.AnswerType)
+        $authResult = $null
+        switch ($mechanism.AnswerType)
+        {
+            'Text'
+            {
+                # prompt for the answer as a secure string, then convert it for the request body
+                $secureAnswer = Read-Host $mechanism.PromptMechChosen -AsSecureString
+                $answer = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureAnswer))
+                $authResult = Invoke-DpxAdvanceAuthentication -Url $Url -TenantId $startResult.TenantId -SessionId $startResult.SessionId -MechanismId $mechanism.MechanismId -Action 'Answer' -Answer $answer
+            }# 'Text'
+            'StartTextOob'
+            {
+                Write-Verbose "Starting out-of-bounds (OOB) challenge (StartOOB)."
+                # start the out-of-bounds challenge, then answer with the code if one is pending
+                $authResult = Invoke-DpxAdvanceAuthentication -Url $Url -TenantId $startResult.TenantId -SessionId $startResult.SessionId -MechanismId $mechanism.MechanismId -Action 'StartOOB'
+                if ($authResult.Summary -eq 'OobPending')
+                {
+                    Write-Verbose "OOB code pending; awaiting user entry."
+                    $oobAnswer = Read-Host 'Enter the code then press <enter> to finish authentication'
+                    $authResult = Invoke-DpxAdvanceAuthentication -Url $Url -TenantId $startResult.TenantId -SessionId $startResult.SessionId -MechanismId $mechanism.MechanismId -Action 'Answer' -Answer $oobAnswer
+                }# if the OOB answer is still pending
+            }# 'StartTextOob'
+            default
+            {
+                Write-Verbose ("Unsupported mechanism answer type: [{0}]." -f $mechanism.AnswerType)
+                throw ("Unsupported mechanism answer type: " + $mechanism.AnswerType)
+            }# default
+        }# switch ($mechanism.AnswerType)
+
+        Write-Verbose ("Challenge result summary: [{0}]." -f $authResult.Summary)
+
+        # when a challenge completes successfully, finalize the connection
+        if ($authResult.Summary -eq 'LoginSuccess')
+        {
+            $accessToken = $authResult.OAuthTokens.access_token
+            Write-Verbose ("LoginSuccess. Finalizing connection for user [{0}]." -f $authResult.User)
+            Set-DPXCESession -PodFqdn ($authResult.PodFqdn -replace '/identity', '') -AccessToken $accessToken -User $authResult.User -CustomerId $startResult.TenantId
+            return
+        }# if ($authResult.Summary -eq 'LoginSuccess')
+    }# foreach ($challenge in $startResult.Challenges)
+
+    # if we get here, no challenge reported LoginSuccess
+    Write-Verbose "Authentication did not complete; no challenge returned LoginSuccess."
+    throw 'Authentication did not complete successfully. Check the response for details.'
+}# function Connect-DpxTenant
 ###########

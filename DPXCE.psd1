@@ -8,8 +8,8 @@
 
     
 
-    # Only functions listed here will be visible to the user
-    FunctionsToExport = '*'
+    # Only public cmdlets are exported; private helpers stay module-internal
+    FunctionsToExport = @('Connect-DpxTenant', 'Invoke-DpxAPI')
 
     VariablesToExport = @()
 
